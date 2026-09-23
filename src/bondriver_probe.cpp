@@ -12,38 +12,43 @@ int wmain(int argc, wchar_t** argv) {
         std::wcerr << L"LoadLibraryW failed: " << GetLastError() << L'\n';
         return 1;
     }
-    using Create = const BonStruct* (*)();
-    auto create = reinterpret_cast<Create>(GetProcAddress(module, "CreateBonStruct"));
+    using Create = IBonDriver* (*)();
+    auto create = reinterpret_cast<Create>(GetProcAddress(module, "CreateBonDriver"));
     if (!create) {
-        std::wcerr << L"CreateBonStruct export missing\n";
+        std::wcerr << L"CreateBonDriver export missing\n";
         return 1;
     }
-    const BonStruct* bon = create();
-    void* context = bon->context;
-    if (!bon->open(context)) {
+    IBonDriver* bon = create();
+    IBonDriver2* bon2 = dynamic_cast<IBonDriver2*>(bon);
+    if (!bon2 || !bon2->EnumTuningSpace(0) || !bon2->EnumChannelName(0, 0)) {
+        std::wcerr << L"IBonDriver2 RTTI or channel enumeration failed\n";
+        bon->Release();
+        return 1;
+    }
+    if (!bon->OpenTuner()) {
         std::wcerr << L"OpenTuner failed\n";
-        bon->release(context);
+        bon->Release();
         return 1;
     }
-    if (!bon->set_channel(context, 0, 0)) {
+    if (!bon2->SetChannel(0, 0)) {
         std::wcerr << L"SetChannel failed\n";
-        bon->release(context);
+        bon->Release();
         return 1;
     }
-    if (bon->wait_ts(context, 1000) != WAIT_OBJECT_0) {
+    if (bon->WaitTsStream(1000) != WAIT_OBJECT_0) {
         std::wcerr << L"WaitTsStream failed\n";
-        bon->release(context);
+        bon->Release();
         return 1;
     }
     BYTE* ts = nullptr;
     DWORD size = 0;
     DWORD remain = 0;
-    bool okay = bon->get_ts_pointer(context, &ts, &size, &remain) &&
+    bool okay = bon->GetTsStream(&ts, &size, &remain) &&
                 ts && size && size % 188 == 0;
     for (DWORD pos = 0; okay && pos < size; pos += 188) okay = ts[pos] == 0x47;
     std::cout << "size=" << size << " packets=" << size / 188
               << " sync_ok=" << okay << '\n';
-    bon->release(context);
+    bon->Release();
     FreeLibrary(module);
     return okay ? 0 : 1;
 }
