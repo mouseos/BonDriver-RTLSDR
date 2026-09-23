@@ -4,6 +4,8 @@ Windows x64 BonDriver2 DLL for integration testing with TVTest. This initial dri
 
 **Current limit:** This is a replay driver. It does not yet tune the USB device or demodulate live I/Q. The shared core currently starts at Viterbi output; the portable live OFDM/Viterbi pipeline and BonDriver USB adapter remain to be implemented. TVTest seeing this driver is an integration test, not proof of live reception or video playback.
 
+The x64 MSVC build was loaded by TVTest 0.10.0 on 2026-09-24. It displayed the captured service, but replayed the same short, damaged scene. Channel scanning exposed fewer channels than the vendor application because this build enumerates only the one recorded physical channel. These observations are expected for the replay backend and do not validate live USB tuning.
+
 ## Build
 
 Clone this repository next to `rtl-sdr-oneseg-core`, or pass its path explicitly. **Build with MSVC x64.** TVTest performs an MSVC `dynamic_cast` on the BonDriver object, so a MinGW C++ DLL can crash TVTest even when a simple exported-function probe succeeds.
