@@ -8,7 +8,7 @@ if(NOT MSVC)
     message(FATAL_ERROR "TVTest uses MSVC C++ RTTI for IBonDriver2; build this BonDriver with MSVC")
 endif()
 
-set(ONESEG_CORE_DIR "${CMAKE_CURRENT_LIST_DIR}/../oneseg-core" CACHE PATH
+set(ONESEG_CORE_DIR "${CMAKE_CURRENT_LIST_DIR}/../rtl-sdr-oneseg-core" CACHE PATH
     "Path to the rtl-sdr-oneseg-core checkout")
 if(NOT EXISTS "${ONESEG_CORE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "Clone rtl-sdr-oneseg-core and set ONESEG_CORE_DIR")
