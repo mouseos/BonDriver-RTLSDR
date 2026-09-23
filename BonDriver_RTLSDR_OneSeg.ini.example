@@ -1,0 +1,4 @@
+[Source]
+; Set this to a local packed Viterbi output file from an RTL-SDR one-seg capture.
+ViterbiFile=C:\path\to\viterbi_bytes.bin
+PhysicalChannel=25

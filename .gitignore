@@ -1,0 +1,8 @@
+/build/
+/build-*/
+*.dll
+*.exe
+*.ts
+*.cu8
+*.bin
+BonDriver_RTLSDR_OneSeg.ini
