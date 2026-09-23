@@ -1,12 +1,14 @@
 #include "bon_abi.h"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <set>
 #include <string>
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 2 || argc > 4) {
-        std::wcerr << L"usage: bondriver_probe path-to-DLL [physical-channel] [seconds]\n";
+    if (argc < 2 || argc > 5) {
+        std::wcerr << L"usage: bondriver_probe path-to-DLL [physical-channel] [seconds] [output.ts]\n";
         return 2;
     }
     HMODULE module = LoadLibraryW(argv[1]);
@@ -45,7 +47,12 @@ int wmain(int argc, wchar_t** argv) {
         bon->Release();
         return 1;
     }
-    const DWORD seconds = argc == 4 ? std::wcstoul(argv[3], nullptr, 10) : 0;
+    const DWORD seconds = argc >= 4 ? std::wcstoul(argv[3], nullptr, 10) : 0;
+    std::ofstream output;
+    if (argc == 5) {
+        output.open(std::filesystem::path(argv[4]), std::ios::binary);
+        if (!output) { bon->Release(); FreeLibrary(module); return 1; }
+    }
     const auto deadline = GetTickCount64() + seconds * 1000;
     std::size_t packets = 0;
     std::set<std::string> unique;
@@ -54,6 +61,8 @@ int wmain(int argc, wchar_t** argv) {
         BYTE* ts = nullptr;
         DWORD size = 0, remain = 0;
         okay = bon->GetTsStream(&ts, &size, &remain) && size % 188 == 0;
+        if (okay && size && output)
+            output.write(reinterpret_cast<const char*>(ts), size);
         for (DWORD pos = 0; okay && pos < size; pos += 188) {
             okay = ts && ts[pos] == 0x47;
             if (okay) {

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -208,6 +209,7 @@ public:
         selected_ = true;
         PurgeTsStream();
         if (live_) {
+            signal_level_ = 0;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 selected_channel_ = 13 + channel;
@@ -310,7 +312,14 @@ private:
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (window.generation != generation_ ||
                     window.channel != selected_channel_) continue;
-                signal_level_ = stats.cyclic_prefix_correlation;
+                // TVTest labels GetSignalLevel in dB. Approximate a quality
+                // ratio from repeated-prefix correlation; this is not a
+                // calibrated RF C/N measurement.
+                const float rho = stats.cyclic_prefix_correlation;
+                signal_level_ = result.stats.accepted && rho > 0 && rho < 1
+                    ? std::clamp(10.0f * std::log10(rho / (1.0f - rho)),
+                                 0.0f, 50.0f)
+                    : 0.0f;
                 std::size_t append_from = 0;
                 // Align the one-second overlap using many packet matches.
                 // Repeated PSI packets can match far from the true boundary,
