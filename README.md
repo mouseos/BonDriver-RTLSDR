@@ -19,6 +19,8 @@ cmake --build build
 
 Use a 64-bit compiler for 64-bit TVTest. Copy **both** `BonDriver_RTLSDR_OneSeg.dll` and `rtl_oneseg_helper.exe` next to `TVTest.exe`. Copy `BonDriver_RTLSDR_OneSeg.ini.example` to `BonDriver_RTLSDR_OneSeg.ini` and set `RtlSdrLibrary` to the full Windows path of the installed 64-bit librtlsdr DLL. The LT-DT306 must use a compatible libusb driver and be connected to an antenna. The default `Mode=Live` uses the isolated helper; each channel change stops the old helper and starts a new one.
 
+The default tuner gain is 5.8 dB (`GainTenthsDb=58`). On the tested FC0013, a 19.7 dB setting decoded only one strong physical channel, while 5.8 dB decoded five channels from the same antenna. This value is an empirical starting point; reception varies with the RF path.
+
 Start TVTest with `/d BonDriver_RTLSDR_OneSeg.dll`. The DLL reports one tuning space with UHF physical channels 13 through 52. For debugging a recorded capture, explicitly set `Mode=Replay`, `ViterbiFile`, and `PhysicalChannel` in the INI; live mode is the default and never falls back silently to replay.
 
 BonDriver ABI was checked against the [TvtPlay BonDriver_Pipe source headers](https://github.com/xtne6f/TvtPlay/tree/work/BonDriver_Pipe_src). TVTest invocation follows [TVTest's documentation](https://github.com/DBCTRADO/TVTest/blob/develop/doc/TVTest.txt).

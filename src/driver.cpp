@@ -83,7 +83,7 @@ public:
                                      library, MAX_PATH, ini.c_str());
             library_path_ = library;
             gain_tenths_db_ = GetPrivateProfileIntW(
-                L"Source", L"GainTenthsDb", 197, ini.c_str());
+                L"Source", L"GainTenthsDb", 58, ini.c_str());
             if (_wcsicmp(mode, L"LiveDirect") != 0) {
                 helper_path_ = module_directory() + L"rtl_oneseg_helper.exe";
                 if (GetFileAttributesW(helper_path_.c_str()) ==
