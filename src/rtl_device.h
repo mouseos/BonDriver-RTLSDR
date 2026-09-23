@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 struct rtlsdr_dev;
 
@@ -12,7 +11,9 @@ public:
     ~RtlDevice();
     bool open(const std::wstring& library, int gain_tenths_db);
     bool tune(unsigned physical_channel);
-    bool read(std::vector<std::uint8_t>& bytes);
+    using Callback = void (*)(unsigned char*, std::uint32_t, void*);
+    bool run_async(Callback callback, void* context);
+    void cancel_async();
     void close();
 private:
     using Open = int (*)(rtlsdr_dev**, std::uint32_t);
@@ -20,7 +21,8 @@ private:
     using SetU32 = int (*)(rtlsdr_dev*, std::uint32_t);
     using SetInt = int (*)(rtlsdr_dev*, int);
     using Reset = int (*)(rtlsdr_dev*);
-    using ReadSync = int (*)(rtlsdr_dev*, void*, int, int*);
+    using ReadAsync = int (*)(rtlsdr_dev*, Callback, void*, std::uint32_t, std::uint32_t);
+    using CancelAsync = int (*)(rtlsdr_dev*);
     HMODULE module_ = nullptr;
     rtlsdr_dev* device_ = nullptr;
     Open open_ = nullptr;
@@ -30,6 +32,7 @@ private:
     SetInt gain_mode_ = nullptr;
     SetInt gain_ = nullptr;
     Reset reset_ = nullptr;
-    ReadSync read_ = nullptr;
+    ReadAsync read_async_ = nullptr;
+    CancelAsync cancel_async_ = nullptr;
     int gain_tenths_db_ = 197;
 };

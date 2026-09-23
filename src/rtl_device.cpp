@@ -14,9 +14,11 @@ bool RtlDevice::open(const std::wstring& library, int gain_tenths_db) {
     gain_mode_ = reinterpret_cast<SetInt>(symbol("rtlsdr_set_tuner_gain_mode"));
     gain_ = reinterpret_cast<SetInt>(symbol("rtlsdr_set_tuner_gain"));
     reset_ = reinterpret_cast<Reset>(symbol("rtlsdr_reset_buffer"));
-    read_ = reinterpret_cast<ReadSync>(symbol("rtlsdr_read_sync"));
+    read_async_ = reinterpret_cast<ReadAsync>(symbol("rtlsdr_read_async"));
+    cancel_async_ = reinterpret_cast<CancelAsync>(symbol("rtlsdr_cancel_async"));
     if (!open_ || !close_ || !rate_ || !frequency_ || !gain_mode_ ||
-        !gain_ || !reset_ || !read_ || open_(&device_, 0) != 0) {
+        !gain_ || !reset_ || !read_async_ || !cancel_async_ ||
+        open_(&device_, 0) != 0) {
         close();
         return false;
     }
@@ -36,18 +38,12 @@ bool RtlDevice::tune(unsigned physical_channel) {
     return frequency_(device_, hz) == 0 && reset_(device_) == 0;
 }
 
-bool RtlDevice::read(std::vector<std::uint8_t>& bytes) {
-    if (!device_) return false;
-    // 4 Mi complex samples give about 2.06 seconds of I/Q per decode.
-    bytes.resize(2 * 4'194'304);
-    for (std::size_t offset = 0; offset < bytes.size();) {
-        int received = 0;
-        constexpr int kBlock = 262'144;
-        if (read_(device_, bytes.data() + offset, kBlock, &received) != 0 ||
-            received <= 0 || received > kBlock) return false;
-        offset += static_cast<std::size_t>(received);
-    }
-    return true;
+bool RtlDevice::run_async(Callback callback, void* context) {
+    return device_ && read_async_(device_, callback, context, 0, 262'144) == 0;
+}
+
+void RtlDevice::cancel_async() {
+    if (device_ && cancel_async_) cancel_async_(device_);
 }
 
 void RtlDevice::close() {

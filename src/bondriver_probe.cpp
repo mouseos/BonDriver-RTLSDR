@@ -1,10 +1,12 @@
 #include "bon_abi.h"
 
 #include <iostream>
+#include <set>
+#include <string>
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 2 || argc > 3) {
-        std::wcerr << L"usage: bondriver_probe path-to-DLL [physical-channel]\n";
+    if (argc < 2 || argc > 4) {
+        std::wcerr << L"usage: bondriver_probe path-to-DLL [physical-channel] [seconds]\n";
         return 2;
     }
     HMODULE module = LoadLibraryW(argv[1]);
@@ -30,24 +32,39 @@ int wmain(int argc, wchar_t** argv) {
         bon->Release();
         return 1;
     }
-    const DWORD channel = argc == 3 ? std::wcstoul(argv[2], nullptr, 10) - 13 : 0;
+    const DWORD channel = argc >= 3 ? std::wcstoul(argv[2], nullptr, 10) - 13 : 0;
     if (!bon2->SetChannel(0, channel)) {
         std::wcerr << L"SetChannel failed\n";
         bon->Release();
         return 1;
     }
     if (bon->WaitTsStream(15'000) != WAIT_OBJECT_0) {
-        std::wcerr << L"WaitTsStream failed\n";
+        std::wcerr << L"WaitTsStream failed; signal="
+                   << bon->GetSignalLevel() << L" ready="
+                   << bon->GetReadyCount() << L'\n';
         bon->Release();
         return 1;
     }
-    BYTE* ts = nullptr;
-    DWORD size = 0;
-    DWORD remain = 0;
-    bool okay = bon->GetTsStream(&ts, &size, &remain) &&
-                ts && size && size % 188 == 0;
-    for (DWORD pos = 0; okay && pos < size; pos += 188) okay = ts[pos] == 0x47;
-    std::cout << "size=" << size << " packets=" << size / 188
+    const DWORD seconds = argc == 4 ? std::wcstoul(argv[3], nullptr, 10) : 0;
+    const auto deadline = GetTickCount64() + seconds * 1000;
+    std::size_t packets = 0;
+    std::set<std::string> unique;
+    bool okay = true;
+    do {
+        BYTE* ts = nullptr;
+        DWORD size = 0, remain = 0;
+        okay = bon->GetTsStream(&ts, &size, &remain) && size % 188 == 0;
+        for (DWORD pos = 0; okay && pos < size; pos += 188) {
+            okay = ts && ts[pos] == 0x47;
+            if (okay) {
+                ++packets;
+                const unsigned pid = ((ts[pos + 1] & 0x1f) << 8) | ts[pos + 2];
+                if (pid != 0x1fff) unique.emplace(reinterpret_cast<const char*>(ts + pos), 188);
+            }
+        }
+        if (seconds && GetTickCount64() < deadline) bon->WaitTsStream(1000);
+    } while (okay && seconds && GetTickCount64() < deadline);
+    std::cout << "packets=" << packets << " unique_non_null=" << unique.size()
               << " sync_ok=" << okay << '\n';
     bon->Release();
     FreeLibrary(module);

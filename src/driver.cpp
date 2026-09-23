@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -64,6 +65,7 @@ public:
             live_ = true;
             open_ = true;
             worker_ = std::thread([this] { capture_loop(); });
+            decoder_ = std::thread([this] { decode_loop(); });
             return TRUE;
         }
         // Recorded replay requires an explicit mode so a failed USB open
@@ -93,7 +95,10 @@ public:
 
     void CloseTuner() override {
         stop_ = true;
+        device_.cancel_async();
+        iq_ready_.notify_all();
         if (worker_.joinable()) worker_.join();
+        if (decoder_.joinable()) decoder_.join();
         device_.close();
         live_ = false;
         stop_ = false;
@@ -103,6 +108,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             queue_.clear();
+            iq_queue_.clear();
             selected_channel_ = 0;
         }
         cursor_ = 0;
@@ -202,9 +208,13 @@ public:
         selected_ = true;
         PurgeTsStream();
         if (live_) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            selected_channel_ = 13 + channel;
-            ++generation_;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                selected_channel_ = 13 + channel;
+                ++generation_;
+                iq_queue_.clear();
+            }
+            device_.cancel_async();
         }
         current_channel_ = channel;
         return TRUE;
@@ -215,9 +225,46 @@ public:
     }
 
 private:
-    void capture_loop() {
-        unsigned tuned = 0;
+    struct Window {
+        unsigned channel;
+        unsigned generation;
         std::vector<std::uint8_t> iq;
+    };
+
+    static void on_iq(unsigned char* data, std::uint32_t size, void* context) {
+        static_cast<Driver*>(context)->receive_iq(data, size);
+    }
+
+    void receive_iq(const unsigned char* data, std::uint32_t size) {
+        if (stop_) { device_.cancel_async(); return; }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (capture_generation_ != generation_) {
+                device_.cancel_async();
+                return;
+            }
+        }
+        constexpr std::size_t kWindowBytes = 2 * 4'194'304;
+        constexpr std::size_t kAdvanceBytes = kWindowBytes / 2;
+        raw_.insert(raw_.end(), data, data + size);
+        while (raw_.size() >= kWindowBytes) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (capture_generation_ != generation_) {
+                    device_.cancel_async();
+                    return;
+                }
+                iq_queue_.push_back({capture_channel_, capture_generation_,
+                                     std::vector<std::uint8_t>(raw_.begin(),
+                                                               raw_.begin() + kWindowBytes)});
+                while (iq_queue_.size() > 3) iq_queue_.pop_front();
+            }
+            iq_ready_.notify_one();
+            raw_.erase(raw_.begin(), raw_.begin() + kAdvanceBytes);
+        }
+    }
+
+    void capture_loop() {
         while (!stop_) {
             unsigned requested = 0;
             unsigned generation = 0;
@@ -227,22 +274,74 @@ private:
                 generation = generation_;
             }
             if (!requested) { Sleep(10); continue; }
-            if (requested != tuned) {
-                if (!device_.tune(requested)) { Sleep(100); continue; }
-                tuned = requested;
-            }
-            if (!device_.read(iq)) { Sleep(100); continue; }
+            if (!device_.tune(requested)) { Sleep(100); continue; }
+            raw_.clear();
+            capture_generation_ = generation;
+            capture_channel_ = requested;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (generation != generation_) continue;
             }
+            device_.run_async(on_iq, this);
+            if (!stop_) Sleep(10);
+        }
+    }
+
+    void decode_loop() {
+        std::vector<std::uint8_t> previous_ts;
+        unsigned previous_generation = 0;
+        while (!stop_) {
+            Window window{};
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                iq_ready_.wait(lock, [this] { return stop_ || !iq_queue_.empty(); });
+                if (stop_) break;
+                window = std::move(iq_queue_.front());
+                iq_queue_.pop_front();
+            }
+            if (window.generation != previous_generation) {
+                previous_ts.clear();
+                previous_generation = window.generation;
+            }
             try {
                 oneseg::IqDecodeStats stats;
-                auto result = oneseg::decode_iq_mode3(iq.data(), iq.size(), &stats);
+                auto result = oneseg::decode_iq_mode3(window.iq.data(),
+                                                       window.iq.size(), &stats);
                 std::lock_guard<std::mutex> lock(mutex_);
-                if (generation != generation_ || requested != selected_channel_) continue;
+                if (window.generation != generation_ ||
+                    window.channel != selected_channel_) continue;
                 signal_level_ = stats.cyclic_prefix_correlation;
-                for (auto byte : result.ts) queue_.push_back(byte);
+                std::size_t append_from = 0;
+                // Align the one-second overlap using many packet matches.
+                // Repeated PSI packets can match far from the true boundary,
+                // so a single last match is not sufficient.
+                std::vector<int> offsets;
+                const auto current_packets = result.ts.size() / 188;
+                const auto previous_packets = previous_ts.size() / 188;
+                for (std::size_t i = 0; i < current_packets; ++i) {
+                    const auto* packet = result.ts.data() + i * 188;
+                    const unsigned pid = ((packet[1] & 0x1f) << 8) | packet[2];
+                    if (pid < 0x20 || pid == 0x1fff) continue;
+                    for (std::size_t j = 0; j < previous_packets; ++j) {
+                        if (std::memcmp(packet, previous_ts.data() + j * 188,
+                                        188) == 0) {
+                            offsets.push_back(static_cast<int>(j) -
+                                              static_cast<int>(i));
+                            break;
+                        }
+                    }
+                }
+                if (offsets.size() >= 4) {
+                    std::sort(offsets.begin(), offsets.end());
+                    const int shift = offsets[offsets.size() / 2];
+                    const int cutoff = std::clamp(
+                        static_cast<int>(previous_packets) - shift,
+                        0, static_cast<int>(current_packets));
+                    append_from = static_cast<std::size_t>(cutoff) * 188;
+                }
+                for (std::size_t i = append_from; i < result.ts.size(); ++i)
+                    queue_.push_back(result.ts[i]);
+                previous_ts = std::move(result.ts);
                 while (queue_.size() > 188 * 2500) queue_.pop_front();
             } catch (...) { signal_level_ = 0; }
         }
@@ -255,7 +354,13 @@ private:
     std::atomic<float> signal_level_{0};
     RtlDevice device_;
     std::thread worker_;
+    std::thread decoder_;
     mutable std::mutex mutex_;
+    std::condition_variable iq_ready_;
+    std::deque<Window> iq_queue_;
+    std::vector<std::uint8_t> raw_;
+    unsigned capture_generation_ = 0;
+    unsigned capture_channel_ = 0;
     std::deque<std::uint8_t> queue_;
     unsigned selected_channel_ = 0;
     unsigned generation_ = 0;
