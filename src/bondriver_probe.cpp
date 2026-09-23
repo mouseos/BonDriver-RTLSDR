@@ -3,8 +3,8 @@
 #include <iostream>
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) {
-        std::wcerr << L"usage: bondriver_probe path-to-DLL\n";
+    if (argc < 2 || argc > 3) {
+        std::wcerr << L"usage: bondriver_probe path-to-DLL [physical-channel]\n";
         return 2;
     }
     HMODULE module = LoadLibraryW(argv[1]);
@@ -30,12 +30,13 @@ int wmain(int argc, wchar_t** argv) {
         bon->Release();
         return 1;
     }
-    if (!bon2->SetChannel(0, 0)) {
+    const DWORD channel = argc == 3 ? std::wcstoul(argv[2], nullptr, 10) - 13 : 0;
+    if (!bon2->SetChannel(0, channel)) {
         std::wcerr << L"SetChannel failed\n";
         bon->Release();
         return 1;
     }
-    if (bon->WaitTsStream(1000) != WAIT_OBJECT_0) {
+    if (bon->WaitTsStream(15'000) != WAIT_OBJECT_0) {
         std::wcerr << L"WaitTsStream failed\n";
         bon->Release();
         return 1;

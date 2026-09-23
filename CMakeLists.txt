@@ -15,7 +15,7 @@ if(NOT EXISTS "${ONESEG_CORE_DIR}/CMakeLists.txt")
 endif()
 
 add_subdirectory("${ONESEG_CORE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/oneseg-core")
-add_library(BonDriver_RTLSDR_OneSeg SHARED src/driver.cpp)
+add_library(BonDriver_RTLSDR_OneSeg SHARED src/driver.cpp src/rtl_device.cpp)
 target_compile_features(BonDriver_RTLSDR_OneSeg PRIVATE cxx_std_17)
 target_compile_definitions(BonDriver_RTLSDR_OneSeg PRIVATE UNICODE _UNICODE)
 target_link_libraries(BonDriver_RTLSDR_OneSeg PRIVATE oneseg_core)

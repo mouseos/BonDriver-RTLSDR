@@ -1,4 +1,8 @@
 [Source]
-; Set this to a local packed Viterbi output file from an RTL-SDR one-seg capture.
-ViterbiFile=C:\path\to\viterbi_bytes.bin
-PhysicalChannel=25
+Mode=Live
+; Full path to a 64-bit librtlsdr DLL with libusb driver installed.
+RtlSdrLibrary=C:\path\to\librtlsdr_w64_static.dll
+GainTenthsDb=197
+; For recorded-signal debugging only, set Mode=Replay and these fields:
+; ViterbiFile=C:\path\to\viterbi_bytes.bin
+; PhysicalChannel=25

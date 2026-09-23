@@ -1,18 +1,23 @@
 #include "bon_abi.h"
 #include "oneseg_core_c.h"
+#include "oneseg_iq.h"
+#include "rtl_device.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
 
 constexpr DWORD kChunkPackets = 16;
 constexpr DWORD kChunkBytes = kChunkPackets * 188;
-constexpr DWORD kPacketRate = 210;
 HMODULE g_module = nullptr;
 
 std::wstring config_path() {
@@ -46,6 +51,23 @@ public:
     const BOOL OpenTuner() override {
         if (open_) return TRUE;
         const auto ini = config_path();
+        wchar_t mode[32]{};
+        GetPrivateProfileStringW(L"Source", L"Mode", L"Live", mode,
+                                 32, ini.c_str());
+        if (_wcsicmp(mode, L"Replay") != 0) {
+        wchar_t library[MAX_PATH]{};
+        GetPrivateProfileStringW(L"Source", L"RtlSdrLibrary", L"rtlsdr.dll",
+                                 library, MAX_PATH, ini.c_str());
+            if (!library[0] || !device_.open(library,
+                    GetPrivateProfileIntW(L"Source", L"GainTenthsDb", 197,
+                                          ini.c_str()))) return FALSE;
+            live_ = true;
+            open_ = true;
+            worker_ = std::thread([this] { capture_loop(); });
+            return TRUE;
+        }
+        // Recorded replay requires an explicit mode so a failed USB open
+        // cannot silently replay old video.
         wchar_t input[MAX_PATH]{};
         GetPrivateProfileStringW(L"Source", L"ViterbiFile", L"", input,
                                  MAX_PATH, ini.c_str());
@@ -65,40 +87,54 @@ public:
         if (!okay) return FALSE;
         physical_channel_ = channel;
         cursor_ = 0;
-        next_tick_ = GetTickCount64();
         open_ = true;
         return TRUE;
     }
 
     void CloseTuner() override {
+        stop_ = true;
+        if (worker_.joinable()) worker_.join();
+        device_.close();
+        live_ = false;
+        stop_ = false;
         open_ = false;
         selected_ = false;
         ts_.clear();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            queue_.clear();
+            selected_channel_ = 0;
+        }
         cursor_ = 0;
-        chunk_size_ = 0;
     }
 
     const BOOL SetChannel(BYTE channel) override {
-        return channel == physical_channel_ ? SetChannel(0, 0) : FALSE;
+        if (channel < 13 || channel > 52) return FALSE;
+        return SetChannel(0, channel - 13);
     }
 
-    const float GetSignalLevel() override { return selected_ ? 1.0f : 0.0f; }
+    const float GetSignalLevel() override {
+        return live_ ? signal_level_.load() : (selected_ ? 1.0f : 0.0f);
+    }
 
     const DWORD WaitTsStream(DWORD timeout = 0) override {
         if (!open_ || !selected_) return WAIT_ABANDONED;
-        const auto now = GetTickCount64();
-        if (now >= next_tick_) return WAIT_OBJECT_0;
-        const auto needed = static_cast<DWORD>(std::min<ULONGLONG>(next_tick_ - now, 0xFFFFFFFFu));
-        if (timeout && timeout < needed) {
-            Sleep(timeout);
+        if (live_) {
+            const auto start = GetTickCount64();
+            do {
+                if (GetReadyCount()) return WAIT_OBJECT_0;
+                Sleep(10);
+            } while (timeout && GetTickCount64() - start < timeout);
             return WAIT_TIMEOUT;
         }
-        Sleep(needed);
-        return WAIT_OBJECT_0;
+        return GetReadyCount() ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
     }
 
     const DWORD GetReadyCount() override {
-        return open_ && selected_ && GetTickCount64() >= next_tick_ ? 1 : 0;
+        if (!open_ || !selected_) return 0;
+        if (!live_) return ts_.empty() ? 0 : 1;
+        std::lock_guard<std::mutex> lock(mutex_);
+        return static_cast<DWORD>(queue_.size() / 188);
     }
 
     const BOOL GetTsStream(BYTE* dst, DWORD* size, DWORD* remain) override {
@@ -113,63 +149,121 @@ public:
         *dst = nullptr;
         *size = 0;
         *remain = 0;
-        if (GetTickCount64() < next_tick_) return TRUE;
+        if (live_) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto count = std::min<std::size_t>(kChunkBytes, queue_.size() / 188 * 188);
+            for (std::size_t i = 0; i < count; ++i) {
+                chunk_[i] = queue_.front();
+                queue_.pop_front();
+            }
+            *dst = chunk_.data();
+            *size = static_cast<DWORD>(count);
+            *remain = static_cast<DWORD>(queue_.size() / 188);
+            return TRUE;
+        }
         const std::size_t packets = ts_.size() / 188;
         if (!packets) return FALSE;
         for (DWORD i = 0; i < kChunkPackets; ++i) {
             std::memcpy(chunk_.data() + i * 188,
                         ts_.data() + (cursor_++ % packets) * 188, 188);
         }
-        chunk_size_ = kChunkBytes;
         *dst = chunk_.data();
-        *size = chunk_size_;
-        next_tick_ = GetTickCount64() + 1000 * kChunkPackets / kPacketRate;
+        *size = kChunkBytes;
         return TRUE;
     }
 
     void PurgeTsStream() override {
         cursor_ = 0;
-        chunk_size_ = 0;
-        next_tick_ = GetTickCount64();
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.clear();
     }
 
     void Release() override {
+        CloseTuner();
         delete bon_struct_;
         delete this;
     }
 
     void SetBonStruct(BonStruct* value) { bon_struct_ = value; }
 
-    LPCTSTR GetTunerName() override { return TEXT("RTL-SDR OneSeg Replay"); }
+    LPCTSTR GetTunerName() override { return TEXT("RTL-SDR OneSeg"); }
     const BOOL IsTunerOpening() override { return open_ ? TRUE : FALSE; }
     LPCTSTR EnumTuningSpace(DWORD space) override {
-        return space == 0 ? TEXT("UHF one-seg replay") : nullptr;
+        return space == 0 ? TEXT("UHF one-seg") : nullptr;
     }
     LPCTSTR EnumChannelName(DWORD space, DWORD channel) override {
-        if (space != 0 || channel != 0) return nullptr;
-        channel_name_ = TEXT("UHF ") + std::to_wstring(physical_channel_);
+        if (space != 0 || channel >= (live_ ? 40u : 1u)) return nullptr;
+        channel_name_ = TEXT("UHF ") +
+                        std::to_wstring(live_ ? 13 + channel : physical_channel_);
         return channel_name_.c_str();
     }
     const BOOL SetChannel(DWORD space, DWORD channel) override {
-        if (!open_ || space != 0 || channel != 0) return FALSE;
+        if (!open_ || space != 0 || channel >= (live_ ? 40u : 1u)) return FALSE;
         selected_ = true;
         PurgeTsStream();
+        if (live_) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            selected_channel_ = 13 + channel;
+            ++generation_;
+        }
+        current_channel_ = channel;
         return TRUE;
     }
     const DWORD GetCurSpace() override { return selected_ ? 0 : 0xFFFFFFFFu; }
     const DWORD GetCurChannel() override {
-        return selected_ ? 0 : 0xFFFFFFFFu;
+        return selected_ ? current_channel_ : 0xFFFFFFFFu;
     }
 
 private:
+    void capture_loop() {
+        unsigned tuned = 0;
+        std::vector<std::uint8_t> iq;
+        while (!stop_) {
+            unsigned requested = 0;
+            unsigned generation = 0;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                requested = selected_channel_;
+                generation = generation_;
+            }
+            if (!requested) { Sleep(10); continue; }
+            if (requested != tuned) {
+                if (!device_.tune(requested)) { Sleep(100); continue; }
+                tuned = requested;
+            }
+            if (!device_.read(iq)) { Sleep(100); continue; }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (generation != generation_) continue;
+            }
+            try {
+                oneseg::IqDecodeStats stats;
+                auto result = oneseg::decode_iq_mode3(iq.data(), iq.size(), &stats);
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (generation != generation_ || requested != selected_channel_) continue;
+                signal_level_ = stats.cyclic_prefix_correlation;
+                for (auto byte : result.ts) queue_.push_back(byte);
+                while (queue_.size() > 188 * 2500) queue_.pop_front();
+            } catch (...) { signal_level_ = 0; }
+        }
+    }
+
     bool open_ = false;
     bool selected_ = false;
+    bool live_ = false;
+    std::atomic<bool> stop_{false};
+    std::atomic<float> signal_level_{0};
+    RtlDevice device_;
+    std::thread worker_;
+    mutable std::mutex mutex_;
+    std::deque<std::uint8_t> queue_;
+    unsigned selected_channel_ = 0;
+    unsigned generation_ = 0;
+    DWORD current_channel_ = 0;
     DWORD physical_channel_ = 25;
     std::wstring channel_name_;
     std::vector<std::uint8_t> ts_;
     std::size_t cursor_ = 0;
-    ULONGLONG next_tick_ = 0;
-    DWORD chunk_size_ = 0;
     std::array<BYTE, kChunkBytes> chunk_{};
     BonStruct* bon_struct_ = nullptr;
 };

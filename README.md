@@ -1,22 +1,22 @@
 # BonDriver for RTL-SDR One-seg
 
-Windows x64 BonDriver2 DLL for integration testing with TVTest. This initial driver reads **recorded Viterbi bytes from a physical RTL-SDR one-seg capture**, calls the shared [RTL-SDR one-seg core](https://github.com/mouseos/rtl-sdr-oneseg-core), and replays the recovered 188-byte TS to TVTest. No GNU Radio runtime or proprietary Realtek DLL is used.
+Windows x64 BonDriver2 DLL for RTL-SDR / LT-DT306 live ISDB-T one-seg reception in TVTest. The driver loads a 64-bit `librtlsdr` DLL, tunes UHF physical channels 13-52, captures unsigned 8-bit I/Q, and calls the portable [RTL-SDR one-seg core](https://github.com/mouseos/rtl-sdr-oneseg-core) to produce 188-byte MPEG-TS packets. It has no GNU Radio runtime dependency.
 
-**Current limit:** This is a replay driver. It does not yet tune the USB device or demodulate live I/Q. The shared core currently starts at Viterbi output; the portable live OFDM/Viterbi pipeline and BonDriver USB adapter remain to be implemented. TVTest seeing this driver is an integration test, not proof of live reception or video playback.
+The current demodulator supports Mode 3, guard interval 1/8, QPSK, code rate 2/3 and time interleave I=4. Other transmission modes are not yet supported. It decodes independent 2.06-second capture batches, so there are gaps at batch boundaries. Service/channel scan may require more time than a hardware tuner; TVTest video continuity is not yet established.
 
-The x64 MSVC build was loaded by TVTest 0.10.0 on 2026-09-24. It displayed the captured service, but replayed the same short, damaged scene. Channel scanning exposed fewer channels than the vendor application because this build enumerates only the one recorded physical channel. These observations are expected for the replay backend and do not validate live USB tuning.
+The x64 MSVC BonDriver ABI was confirmed in TVTest 0.10.0. The live backend yielded 16 sync-correct TS packets from physical channel 25 through the BonDriver probe on 2026-09-24. A separate physical channel 13 probe did not acquire TS within 15 seconds. These observations do not establish TVTest playback quality.
 
 ## Build
 
 Clone this repository next to `rtl-sdr-oneseg-core`, or pass its path explicitly. **Build with MSVC x64.** TVTest performs an MSVC `dynamic_cast` on the BonDriver object, so a MinGW C++ DLL can crash TVTest even when a simple exported-function probe succeeds.
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -DONESEG_CORE_DIR=D:\path\to\rtl-sdr-oneseg-core
-cmake --build build --config Release
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DONESEG_CORE_DIR=D:\path\to\rtl-sdr-oneseg-core
+cmake --build build
 ```
 
-Use a **64-bit** compiler for 64-bit TVTest. Copy `BonDriver_RTLSDR_OneSeg.dll` next to `TVTest.exe`. Copy `BonDriver_RTLSDR_OneSeg.ini.example` to `BonDriver_RTLSDR_OneSeg.ini` and set `ViterbiFile` to an absolute path of a local packed Viterbi output file and `PhysicalChannel` to its physical UHF channel. This repo contains no recordings.
+Use a 64-bit compiler for 64-bit TVTest. Copy `BonDriver_RTLSDR_OneSeg.dll` next to `TVTest.exe`. Copy `BonDriver_RTLSDR_OneSeg.ini.example` to `BonDriver_RTLSDR_OneSeg.ini` and set `RtlSdrLibrary` to the full Windows path of the installed 64-bit librtlsdr DLL. The LT-DT306 must use a compatible libusb driver and be connected to an antenna.
 
-Then start TVTest with `/d BonDriver_RTLSDR_OneSeg.dll`. The DLL reports one tuning space with one channel named after the configured physical UHF channel; its BonDriver2 channel index is 0. It loops the short recovered TS sample at a nominal one-seg packet rate. The current short sample may not include enough PSI or keyframes for TVTest to show video.
+Start TVTest with `/d BonDriver_RTLSDR_OneSeg.dll`. The DLL reports one tuning space with UHF physical channels 13 through 52. For debugging a recorded capture, explicitly set `Mode=Replay`, `ViterbiFile`, and `PhysicalChannel` in the INI; live mode is the default and never falls back silently to replay.
 
 BonDriver ABI was checked against the [TvtPlay BonDriver_Pipe source headers](https://github.com/xtne6f/TvtPlay/tree/work/BonDriver_Pipe_src). TVTest invocation follows [TVTest's documentation](https://github.com/DBCTRADO/TVTest/blob/develop/doc/TVTest.txt).
