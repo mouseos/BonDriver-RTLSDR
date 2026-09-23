@@ -4,6 +4,7 @@ RtlDevice::~RtlDevice() { close(); }
 
 bool RtlDevice::open(const std::wstring& library, int gain_tenths_db) {
     close();
+    library_ = library;
     module_ = LoadLibraryW(library.c_str());
     if (!module_) return false;
     auto symbol = [this](const char* name) { return GetProcAddress(module_, name); };
@@ -28,6 +29,16 @@ bool RtlDevice::open(const std::wstring& library, int gain_tenths_db) {
         close();
         return false;
     }
+    return true;
+}
+
+bool RtlDevice::reopen() {
+    if (!module_ || !open_ || !close_) return false;
+    if (device_) close_(device_);
+    device_ = nullptr;
+    if (open_(&device_, 0) != 0) return false;
+    if (rate_(device_, 2'031'746) != 0 || gain_mode_(device_, 1) != 0 ||
+        gain_(device_, gain_tenths_db_) != 0) return false;
     return true;
 }
 

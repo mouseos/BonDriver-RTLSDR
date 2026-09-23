@@ -24,3 +24,12 @@ set_target_properties(BonDriver_RTLSDR_OneSeg PROPERTIES PREFIX "" OUTPUT_NAME "
 add_executable(bondriver_probe src/bondriver_probe.cpp)
 target_compile_features(bondriver_probe PRIVATE cxx_std_17)
 target_compile_definitions(bondriver_probe PRIVATE UNICODE _UNICODE)
+
+add_executable(bondriver_scan_probe src/bondriver_scan_probe.cpp)
+target_compile_features(bondriver_scan_probe PRIVATE cxx_std_17)
+target_compile_definitions(bondriver_scan_probe PRIVATE UNICODE _UNICODE)
+
+add_executable(rtl_oneseg_helper src/rtl_oneseg_helper.cpp src/rtl_device.cpp)
+target_compile_features(rtl_oneseg_helper PRIVATE cxx_std_17)
+target_compile_definitions(rtl_oneseg_helper PRIVATE UNICODE _UNICODE)
+target_link_libraries(rtl_oneseg_helper PRIVATE oneseg_core)

@@ -21,6 +21,27 @@ namespace {
 constexpr DWORD kChunkPackets = 16;
 constexpr DWORD kChunkBytes = kChunkPackets * 188;
 HMODULE g_module = nullptr;
+constexpr std::uint32_t kFrameMagic = 0x3147534f;
+
+std::wstring module_directory() {
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(g_module, path, MAX_PATH);
+    std::wstring result(path);
+    const auto separator = result.find_last_of(L"\\/");
+    return separator == std::wstring::npos ? L"" : result.substr(0, separator + 1);
+}
+
+bool read_exact(HANDLE pipe, void* output, std::size_t size) {
+    auto* bytes = static_cast<std::uint8_t*>(output);
+    for (std::size_t offset = 0; offset < size;) {
+        DWORD received = 0;
+        if (!ReadFile(pipe, bytes + offset,
+                      static_cast<DWORD>(size - offset), &received, nullptr) ||
+            !received) return false;
+        offset += received;
+    }
+    return true;
+}
 
 std::wstring config_path() {
     wchar_t path[MAX_PATH]{};
@@ -57,12 +78,22 @@ public:
         GetPrivateProfileStringW(L"Source", L"Mode", L"Live", mode,
                                  32, ini.c_str());
         if (_wcsicmp(mode, L"Replay") != 0) {
-        wchar_t library[MAX_PATH]{};
-        GetPrivateProfileStringW(L"Source", L"RtlSdrLibrary", L"rtlsdr.dll",
-                                 library, MAX_PATH, ini.c_str());
-            if (!library[0] || !device_.open(library,
-                    GetPrivateProfileIntW(L"Source", L"GainTenthsDb", 197,
-                                          ini.c_str()))) return FALSE;
+            wchar_t library[MAX_PATH]{};
+            GetPrivateProfileStringW(L"Source", L"RtlSdrLibrary", L"rtlsdr.dll",
+                                     library, MAX_PATH, ini.c_str());
+            library_path_ = library;
+            gain_tenths_db_ = GetPrivateProfileIntW(
+                L"Source", L"GainTenthsDb", 197, ini.c_str());
+            if (_wcsicmp(mode, L"LiveDirect") != 0) {
+                helper_path_ = module_directory() + L"rtl_oneseg_helper.exe";
+                if (GetFileAttributesW(helper_path_.c_str()) ==
+                    INVALID_FILE_ATTRIBUTES) return FALSE;
+                isolated_ = true;
+                live_ = true;
+                open_ = true;
+                return TRUE;
+            }
+            if (!library[0] || !device_.open(library, gain_tenths_db_)) return FALSE;
             live_ = true;
             open_ = true;
             worker_ = std::thread([this] { capture_loop(); });
@@ -96,11 +127,14 @@ public:
 
     void CloseTuner() override {
         stop_ = true;
-        device_.cancel_async();
+        if (isolated_) stop_helper();
+        // The callback cancels asynchronous USB reading on its own thread.
+        // A concurrent cancel here can race with center-frequency setup.
         iq_ready_.notify_all();
         if (worker_.joinable()) worker_.join();
         if (decoder_.joinable()) decoder_.join();
         device_.close();
+        isolated_ = false;
         live_ = false;
         stop_ = false;
         open_ = false;
@@ -206,27 +240,94 @@ public:
     }
     const BOOL SetChannel(DWORD space, DWORD channel) override {
         if (!open_ || space != 0 || channel >= (live_ ? 40u : 1u)) return FALSE;
-        selected_ = true;
-        PurgeTsStream();
         if (live_) {
             signal_level_ = 0;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 selected_channel_ = 13 + channel;
                 ++generation_;
+                queue_.clear();
                 iq_queue_.clear();
             }
-            device_.cancel_async();
+            if (isolated_ && !start_helper(13 + channel)) return FALSE;
+            // The I/Q callback notices the generation change and cancels
+            // within the capture thread. Calling cancel_async here can race
+            // with rtlsdr_set_center_freq during rapid channel scans.
+        } else {
+            PurgeTsStream();
         }
         current_channel_ = channel;
+        selected_ = true;
         return TRUE;
     }
     const DWORD GetCurSpace() override { return selected_ ? 0 : 0xFFFFFFFFu; }
     const DWORD GetCurChannel() override {
-        return selected_ ? current_channel_ : 0xFFFFFFFFu;
+        return selected_ ? current_channel_.load() : 0xFFFFFFFFu;
     }
 
 private:
+    bool start_helper(unsigned channel) {
+        stop_helper();
+        SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        HANDLE input = nullptr, output = nullptr;
+        if (!CreatePipe(&input, &output, &security, 0)) return false;
+        SetHandleInformation(input, HANDLE_FLAG_INHERIT, 0);
+        HANDLE null_input = CreateFileW(L"NUL", GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, nullptr);
+        HANDLE null_error = CreateFileW(L"NUL", GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0, nullptr);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = null_input;
+        startup.hStdOutput = output;
+        startup.hStdError = null_error;
+        std::wstring command = L"\"" + helper_path_ + L"\" " +
+            std::to_wstring(channel) + L" \"" + library_path_ + L"\" " +
+            std::to_wstring(gain_tenths_db_);
+        PROCESS_INFORMATION process{};
+        const BOOL created = CreateProcessW(helper_path_.c_str(), command.data(),
+            nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
+            &startup, &process);
+        if (null_input != INVALID_HANDLE_VALUE) CloseHandle(null_input);
+        if (null_error != INVALID_HANDLE_VALUE) CloseHandle(null_error);
+        CloseHandle(output);
+        if (!created) { CloseHandle(input); return false; }
+        CloseHandle(process.hThread);
+        helper_process_ = process.hProcess;
+        helper_pipe_ = input;
+        const unsigned generation = generation_;
+        reader_ = std::thread([this, generation] { read_helper(generation); });
+        return true;
+    }
+
+    void stop_helper() {
+        if (helper_process_) {
+            TerminateProcess(helper_process_, 0);
+            WaitForSingleObject(helper_process_, 5000);
+            CloseHandle(helper_process_);
+            helper_process_ = nullptr;
+        }
+        if (reader_.joinable()) reader_.join();
+        if (helper_pipe_) { CloseHandle(helper_pipe_); helper_pipe_ = nullptr; }
+    }
+
+    void read_helper(unsigned generation) {
+        struct Frame { std::uint32_t magic, bytes; float quality; };
+        Frame frame{};
+        while (read_exact(helper_pipe_, &frame, sizeof(frame))) {
+            if (frame.magic != kFrameMagic || frame.bytes > 1024 * 1024 ||
+                frame.bytes % 188) break;
+            std::vector<std::uint8_t> bytes(frame.bytes);
+            if (!read_exact(helper_pipe_, bytes.data(), bytes.size())) break;
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != generation_) continue;
+            for (auto byte : bytes) queue_.push_back(byte);
+            while (queue_.size() > 188 * 2500) queue_.pop_front();
+            signal_level_ = frame.quality;
+        }
+    }
+
     struct Window {
         unsigned channel;
         unsigned generation;
@@ -249,6 +350,16 @@ private:
         constexpr std::size_t kWindowBytes = 2 * 4'194'304;
         constexpr std::size_t kAdvanceBytes = kWindowBytes / 2;
         raw_.insert(raw_.end(), data, data + size);
+        if (!warmup_queued_ && raw_.size() >= kAdvanceBytes) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (capture_generation_ == generation_) {
+                iq_queue_.push_back({capture_channel_, capture_generation_,
+                                     std::vector<std::uint8_t>(raw_.begin(),
+                                                               raw_.begin() + kAdvanceBytes)});
+                warmup_queued_ = true;
+                iq_ready_.notify_one();
+            }
+        }
         while (raw_.size() >= kWindowBytes) {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -267,6 +378,7 @@ private:
     }
 
     void capture_loop() {
+        bool ran_async = false;
         while (!stop_) {
             unsigned requested = 0;
             unsigned generation = 0;
@@ -276,15 +388,19 @@ private:
                 generation = generation_;
             }
             if (!requested) { Sleep(10); continue; }
+            if (ran_async && !device_.reopen()) { Sleep(100); continue; }
             if (!device_.tune(requested)) { Sleep(100); continue; }
             raw_.clear();
+            warmup_queued_ = false;
             capture_generation_ = generation;
             capture_channel_ = requested;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (generation != generation_) continue;
             }
+            if (stop_) break;
             device_.run_async(on_iq, this);
+            ran_async = true;
             if (!stop_) Sleep(10);
         }
     }
@@ -356,9 +472,15 @@ private:
         }
     }
 
-    bool open_ = false;
-    bool selected_ = false;
-    bool live_ = false;
+    std::atomic<bool> open_{false};
+    std::atomic<bool> selected_{false};
+    std::atomic<bool> live_{false};
+    bool isolated_ = false;
+    std::wstring helper_path_, library_path_;
+    int gain_tenths_db_ = 197;
+    HANDLE helper_process_ = nullptr;
+    HANDLE helper_pipe_ = nullptr;
+    std::thread reader_;
     std::atomic<bool> stop_{false};
     std::atomic<float> signal_level_{0};
     RtlDevice device_;
@@ -368,12 +490,13 @@ private:
     std::condition_variable iq_ready_;
     std::deque<Window> iq_queue_;
     std::vector<std::uint8_t> raw_;
+    bool warmup_queued_ = false;
     unsigned capture_generation_ = 0;
     unsigned capture_channel_ = 0;
     std::deque<std::uint8_t> queue_;
     unsigned selected_channel_ = 0;
     unsigned generation_ = 0;
-    DWORD current_channel_ = 0;
+    std::atomic<DWORD> current_channel_{0};
     DWORD physical_channel_ = 25;
     std::wstring channel_name_;
     std::vector<std::uint8_t> ts_;
