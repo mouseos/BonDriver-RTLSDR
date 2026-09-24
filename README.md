@@ -30,10 +30,6 @@ USBから取得したI/Qを別プロセスの`rtl_oneseg_helper.exe`で復調し
 
 `GetSignalLevel()`は復調後の同期相関から計算した便宜的な品質指標です。表示単位がdBでも、校正済みのRF C/Nや受信電力ではありません。選局直後は0になります。
 
-### 旧名から更新する場合
-
-旧`BonDriver_RTLSDR_OneSeg.dll`を使っていた場合は、TVTestを終了してから、既存の`BonDriver_RTLSDR_OneSeg.ini`と`BonDriver_RTLSDR_OneSeg.ch2`をそれぞれ`BonDriver_RTLSDR.ini`と`BonDriver_RTLSDR.ch2`へ改名すると設定を引き継げます。新しいDLL・ヘルパー・`rtlsdr.dll`・`libusb-1.0.dll`を一式で入れ替えてください。TVTestを複数起動すると片方がUSBチューナーを占有し、もう片方では全チャンネルが0と表示されることがあります。
-
 ## 設定と制約
 
 - `Mode=Live`が通常の実機受信です。`Mode=Replay`は録画済み中間データの開発用再生で、`ViterbiFile`と`PhysicalChannel`の指定が必要です。通常の視聴では変更しません。
