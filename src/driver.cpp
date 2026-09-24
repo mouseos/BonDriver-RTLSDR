@@ -232,7 +232,7 @@ public:
 
     void SetBonStruct(BonStruct* value) { bon_struct_ = value; }
 
-    LPCTSTR GetTunerName() override { return TEXT("RTL-SDR OneSeg"); }
+    LPCTSTR GetTunerName() override { return TEXT("RTL-SDR"); }
     const BOOL IsTunerOpening() override { return open_ ? TRUE : FALSE; }
     LPCTSTR EnumTuningSpace(DWORD space) override {
         return space == 0 ? TEXT("UHF one-seg") : nullptr;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(BonDriver_RTLSDR_OneSeg LANGUAGES CXX)
+project(BonDriver_RTLSDR LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "BonDriver requires Windows")
@@ -15,11 +15,11 @@ if(NOT EXISTS "${ONESEG_CORE_DIR}/CMakeLists.txt")
 endif()
 
 add_subdirectory("${ONESEG_CORE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/oneseg-core")
-add_library(BonDriver_RTLSDR_OneSeg SHARED src/driver.cpp src/rtl_device.cpp)
-target_compile_features(BonDriver_RTLSDR_OneSeg PRIVATE cxx_std_17)
-target_compile_definitions(BonDriver_RTLSDR_OneSeg PRIVATE UNICODE _UNICODE)
-target_link_libraries(BonDriver_RTLSDR_OneSeg PRIVATE oneseg_core)
-set_target_properties(BonDriver_RTLSDR_OneSeg PROPERTIES PREFIX "" OUTPUT_NAME "BonDriver_RTLSDR_OneSeg")
+add_library(BonDriver_RTLSDR SHARED src/driver.cpp src/rtl_device.cpp)
+target_compile_features(BonDriver_RTLSDR PRIVATE cxx_std_17)
+target_compile_definitions(BonDriver_RTLSDR PRIVATE UNICODE _UNICODE)
+target_link_libraries(BonDriver_RTLSDR PRIVATE oneseg_core)
+set_target_properties(BonDriver_RTLSDR PROPERTIES PREFIX "" OUTPUT_NAME "BonDriver_RTLSDR")
 
 add_executable(bondriver_probe src/bondriver_probe.cpp)
 target_compile_features(bondriver_probe PRIVATE cxx_std_17)
