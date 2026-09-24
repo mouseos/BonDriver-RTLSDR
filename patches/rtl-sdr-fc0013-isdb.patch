@@ -1,0 +1,103 @@
+diff --git a/include/rtl-sdr.h b/include/rtl-sdr.h
+index d64701e..73c5722 100644
+--- a/include/rtl-sdr.h
++++ b/include/rtl-sdr.h
+@@ -291,6 +291,9 @@ RTLSDR_API int rtlsdr_set_testmode(rtlsdr_dev_t *dev, int on);
+  * \return 0 on success
+  */
+ RTLSDR_API int rtlsdr_set_agc_mode(rtlsdr_dev_t *dev, int on);
++RTLSDR_API int rtlsdr_set_vendor_fc0013_mode(rtlsdr_dev_t *dev);
++RTLSDR_API int rtlsdr_set_vendor_isdb_if(rtlsdr_dev_t *dev, int offset_khz);
++RTLSDR_API int rtlsdr_set_fc0013_if_gain_reg(rtlsdr_dev_t *dev, int value);
+ 
+ /*!
+  * Enable or disable the direct sampling mode. When enabled, the IF mode
+diff --git a/src/librtlsdr.c b/src/librtlsdr.c
+index 55d2ef1..152ef9b 100644
+--- a/src/librtlsdr.c
++++ b/src/librtlsdr.c
+@@ -22,6 +22,7 @@
+ #include <string.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <math.h>
+ #ifndef _WIN32
+ #include <unistd.h>
+ #define min(a, b) (((a) < (b)) ? (a) : (b))
+@@ -1159,7 +1160,75 @@ int rtlsdr_set_agc_mode(rtlsdr_dev_t *dev, int on)
+ 	if (!dev)
+ 		return -1;
+ 
+-	return rtlsdr_demod_write_reg(dev, 0, 0x19, on ? 0x25 : 0x05, 1);
++	/* Local comparison with the vendor ISDB-T initialization. */
++	return rtlsdr_demod_write_reg(dev, 0, 0x19,
++				       on == 2 ? 0x21 : (on ? 0x25 : 0x05), 1);
++}
++
++int rtlsdr_set_vendor_fc0013_mode(rtlsdr_dev_t *dev)
++{
++	/* RTKISDBT.dll FC0013 field table at 0x10436200, decoded via Ghidra.
++	 * Comparison build only; retain the vendor's register write order. */
++	static const struct {
++		uint8_t page, reg, high, low, value;
++	} fields[] = {
++		{1,0x12,7,0,0x5a}, {1,0x02,0,0,0}, {1,0x03,7,0,0x5a},
++		{1,0xc7,5,1,22}, {1,0x04,4,1,6}, {1,0x05,7,7,1},
++		{1,0xc8,4,0,22}, {1,0x06,5,0,53}, {1,0xc9,5,0,33},
++		{1,0xca,5,0,33}, {1,0xcb,7,0,0}, {1,0x07,7,0,64},
++		{1,0xcd,7,0,16}, {1,0xce,7,0,16}, {1,0x08,7,0,128},
++		{1,0x09,7,0,127}, {1,0x0a,7,0,128}, {1,0x0b,7,0,127},
++		{0,0x0e,1,1,0}, {0,0x0e,0,0,0}, {1,0xe5,0,0,0},
++		{1,0xdd,7,0,17}, {1,0xde,7,0,239}, {1,0xd8,3,0,12},
++		{1,0xe6,3,3,0}, {1,0xd7,0,0,1},
++		{0,0x08,7,7,1}, {0,0x08,6,6,1}, {1,0xa6,7,7,0}
++	};
++	unsigned int i;
++	if (!dev || dev->tuner_type != RTLSDR_TUNER_FC0013)
++		return -1;
++	/* RTKISDBT.dll FUN_1001cca0: ADC / AGC base registers. */
++	if (rtlsdr_demod_write_reg(dev, 0, 0x17, 0x08, 1) ||
++	    rtlsdr_demod_write_reg(dev, 0, 0x18, 0x10, 1) ||
++	    rtlsdr_demod_write_reg(dev, 0, 0x19, 0x21, 1) ||
++	    rtlsdr_demod_write_reg(dev, 0, 0x20, 0x40, 1))
++		return -1;
++	for (i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
++		uint8_t mask = ((1u << (fields[i].high - fields[i].low + 1)) - 1)
++				<< fields[i].low;
++		uint8_t old = rtlsdr_demod_read_reg(dev, fields[i].page,
++							fields[i].reg, 1);
++		uint8_t value = (old & ~mask) |
++					((fields[i].value << fields[i].low) & mask);
++		if (rtlsdr_demod_write_reg(dev, fields[i].page,
++						fields[i].reg, value, 1))
++			return -1;
++	}
++	return 0;
++}
++
++int rtlsdr_set_vendor_isdb_if(rtlsdr_dev_t *dev, int offset_khz)
++{
++	/* RTKISDBT.dll FUN_1001e75c: signed 22-bit IF value at page 1, 0x16-0x18. */
++	uint32_t value;
++	if (!dev)
++		return -1;
++	value = (uint32_t)llround((double)offset_khz * 4194.304 / 28.8) & 0x3fffff;
++	if (rtlsdr_demod_write_reg(dev, 1, 0x16, (value >> 16) & 0x3f, 1) ||
++	    rtlsdr_demod_write_reg(dev, 1, 0x17, (value >> 8) & 0xff, 1) ||
++	    rtlsdr_demod_write_reg(dev, 1, 0x18, value & 0xff, 1))
++		return -1;
++	return 0;
++}
++
++int rtlsdr_set_fc0013_if_gain_reg(rtlsdr_dev_t *dev, int value)
++{
++	int result;
++	if (!dev || dev->tuner_type != RTLSDR_TUNER_FC0013 || value < 0 || value > 255)
++		return -1;
++	rtlsdr_set_i2c_repeater(dev, 1);
++	result = rtlsdr_i2c_write_reg(dev, FC0013_I2C_ADDR, 0x13, (uint8_t)value);
++	rtlsdr_set_i2c_repeater(dev, 0);
++	return result == 2 ? 0 : -1;
+ }
+ 
+ int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)

@@ -2,6 +2,7 @@
 #include "oneseg_core_c.h"
 #include "oneseg_iq.h"
 #include "rtl_device.h"
+#include "ts_overlap.h"
 
 #include <algorithm>
 #include <array>
@@ -436,34 +437,8 @@ private:
                     ? std::clamp(10.0f * std::log10(rho / (1.0f - rho)),
                                  0.0f, 50.0f)
                     : 0.0f;
-                std::size_t append_from = 0;
-                // Align the one-second overlap using many packet matches.
-                // Repeated PSI packets can match far from the true boundary,
-                // so a single last match is not sufficient.
-                std::vector<int> offsets;
-                const auto current_packets = result.ts.size() / 188;
-                const auto previous_packets = previous_ts.size() / 188;
-                for (std::size_t i = 0; i < current_packets; ++i) {
-                    const auto* packet = result.ts.data() + i * 188;
-                    const unsigned pid = ((packet[1] & 0x1f) << 8) | packet[2];
-                    if (pid < 0x20 || pid == 0x1fff) continue;
-                    for (std::size_t j = 0; j < previous_packets; ++j) {
-                        if (std::memcmp(packet, previous_ts.data() + j * 188,
-                                        188) == 0) {
-                            offsets.push_back(static_cast<int>(j) -
-                                              static_cast<int>(i));
-                            break;
-                        }
-                    }
-                }
-                if (offsets.size() >= 4) {
-                    std::sort(offsets.begin(), offsets.end());
-                    const int shift = offsets[offsets.size() / 2];
-                    const int cutoff = std::clamp(
-                        static_cast<int>(previous_packets) - shift,
-                        0, static_cast<int>(current_packets));
-                    append_from = static_cast<std::size_t>(cutoff) * 188;
-                }
+                const std::size_t append_from =
+                    ts_overlap_bytes(previous_ts, result.ts);
                 for (std::size_t i = append_from; i < result.ts.size(); ++i)
                     queue_.push_back(result.ts[i]);
                 previous_ts = std::move(result.ts);

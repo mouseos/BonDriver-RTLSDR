@@ -1,7 +1,7 @@
 [Source]
 Mode=Live
-; Full path to a 64-bit librtlsdr DLL with libusb driver installed.
-RtlSdrLibrary=C:\path\to\librtlsdr_w64_static.dll
+; Full Windows path to the patched 64-bit rtlsdr.dll (see README).
+RtlSdrLibrary=C:\path\to\rtlsdr.dll
 GainTenthsDb=58
 ; For recorded-signal debugging only, set Mode=Replay and these fields:
 ; ViterbiFile=C:\path\to\viterbi_bytes.bin

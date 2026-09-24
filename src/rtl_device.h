@@ -32,6 +32,10 @@ private:
     SetU32 frequency_ = nullptr;
     SetInt gain_mode_ = nullptr;
     SetInt gain_ = nullptr;
+    SetInt digital_agc_ = nullptr;
+    SetInt vendor_if_ = nullptr;
+    SetInt fc0013_if_gain_reg_ = nullptr;
+    Reset vendor_fc0013_mode_ = nullptr;
     Reset reset_ = nullptr;
     ReadAsync read_async_ = nullptr;
     CancelAsync cancel_async_ = nullptr;

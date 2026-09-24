@@ -1,5 +1,6 @@
 #include "oneseg_iq.h"
 #include "rtl_device.h"
+#include "ts_overlap.h"
 
 #include <windows.h>
 
@@ -63,30 +64,7 @@ public:
             try {
                 oneseg::IqDecodeStats stats;
                 auto result = oneseg::decode_iq_mode3(iq.data(), iq.size(), &stats);
-                const std::size_t current_count = result.ts.size() / 188;
-                const std::size_t previous_count = previous.size() / 188;
-                std::vector<int> offsets;
-                for (std::size_t i = 0; i < current_count; ++i) {
-                    const auto* packet = result.ts.data() + i * 188;
-                    const unsigned pid = ((packet[1] & 0x1f) << 8) | packet[2];
-                    if (pid < 0x20 || pid == 0x1fff) continue;
-                    for (std::size_t j = 0; j < previous_count; ++j) {
-                        if (std::memcmp(packet, previous.data() + j * 188,
-                                        188) == 0) {
-                            offsets.push_back(static_cast<int>(j) -
-                                              static_cast<int>(i));
-                            break;
-                        }
-                    }
-                }
-                std::size_t start = 0;
-                if (offsets.size() >= 4) {
-                    std::sort(offsets.begin(), offsets.end());
-                    const int shift = offsets[offsets.size() / 2];
-                    start = static_cast<std::size_t>(std::clamp(
-                        static_cast<int>(previous_count) - shift,
-                        0, static_cast<int>(current_count))) * 188;
-                }
+                const std::size_t start = ts_overlap_bytes(previous, result.ts);
                 previous = std::move(result.ts);
                 if (start >= previous.size()) continue;
                 const float rho = stats.cyclic_prefix_correlation;
