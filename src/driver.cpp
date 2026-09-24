@@ -1,6 +1,7 @@
 #include "bon_abi.h"
 #include "oneseg_core_c.h"
 #include "oneseg_iq.h"
+#include "oneseg_psi.h"
 #include "rtl_device.h"
 #include "ts_overlap.h"
 
@@ -117,7 +118,10 @@ public:
         std::size_t size = 0;
         const auto* ts = oneseg_result_ts(decoded, &size);
         bool okay = ts && size >= 188 && size % 188 == 0;
-        if (okay) ts_.assign(ts, ts + size);
+        if (okay) {
+            oneseg::PartialReceptionPat pat;
+            ts_ = pat.append(ts, size);
+        }
         oneseg_result_destroy(decoded);
         if (!okay) return FALSE;
         physical_channel_ = channel;
@@ -408,6 +412,7 @@ private:
 
     void decode_loop() {
         std::vector<std::uint8_t> previous_ts;
+        oneseg::PartialReceptionPat pat;
         unsigned previous_generation = 0;
         while (!stop_) {
             Window window{};
@@ -420,6 +425,7 @@ private:
             }
             if (window.generation != previous_generation) {
                 previous_ts.clear();
+                pat = oneseg::PartialReceptionPat{};
                 previous_generation = window.generation;
             }
             try {
@@ -439,8 +445,9 @@ private:
                     : 0.0f;
                 const std::size_t append_from =
                     ts_overlap_bytes(previous_ts, result.ts);
-                for (std::size_t i = append_from; i < result.ts.size(); ++i)
-                    queue_.push_back(result.ts[i]);
+                const auto stream = pat.append(result.ts.data() + append_from,
+                                               result.ts.size() - append_from);
+                for (auto byte : stream) queue_.push_back(byte);
                 previous_ts = std::move(result.ts);
                 while (queue_.size() > 188 * 2500) queue_.pop_front();
             } catch (...) { signal_level_ = 0; }

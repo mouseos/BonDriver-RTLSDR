@@ -1,4 +1,5 @@
 #include "oneseg_iq.h"
+#include "oneseg_psi.h"
 #include "rtl_device.h"
 #include "ts_overlap.h"
 
@@ -53,6 +54,7 @@ public:
 
     void decode_loop() {
         std::vector<std::uint8_t> previous;
+        oneseg::PartialReceptionPat pat;
         for (;;) {
             std::vector<std::uint8_t> iq;
             {
@@ -67,16 +69,18 @@ public:
                 const std::size_t start = ts_overlap_bytes(previous, result.ts);
                 previous = std::move(result.ts);
                 if (start >= previous.size()) continue;
+                const auto stream = pat.append(previous.data() + start,
+                                               previous.size() - start);
                 const float rho = stats.cyclic_prefix_correlation;
                 const float quality = rho > 0 && rho < 1
                     ? std::clamp(10.0f * std::log10(rho / (1.0f - rho)),
                                  0.0f, 50.0f) : 0.0f;
                 struct Frame { std::uint32_t magic, bytes; float quality; };
                 const Frame frame{kFrameMagic,
-                                  static_cast<std::uint32_t>(previous.size() - start),
+                                  static_cast<std::uint32_t>(stream.size()),
                                   quality};
                 if (!write_all(output_, &frame, sizeof(frame)) ||
-                    !write_all(output_, previous.data() + start, frame.bytes))
+                    !write_all(output_, stream.data(), frame.bytes))
                     ExitProcess(1);
             } catch (...) {
                 // An unsupported transmission mode yields no TS for this window.
