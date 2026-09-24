@@ -1,28 +1,61 @@
-# BonDriver for RTL-SDR
+# BonDriver-RTLSDR
 
-Windows x64 BonDriver2 DLL for RTL-SDR / LT-DT306 live ISDB-T one-seg reception in TVTest. The driver starts `rtl_oneseg_helper.exe` for the selected channel. That process loads a 64-bit `librtlsdr` DLL, captures unsigned 8-bit I/Q, and calls the portable [RTL-SDR one-seg core](https://github.com/mouseos/rtl-sdr-oneseg-core) to produce 188-byte MPEG-TS packets. The BonDriver receives TS over a Windows pipe. It has no GNU Radio runtime dependency.
+RTL-SDR（RTL2832U + FC0013）を使い、TVTestで地上デジタル放送のワンセグを視聴するためのWindows x64用BonDriverです。LT-DT306で動作を確認しています。アンテナとlibusb対応のUSBドライバーが必要です。GNU Radioや純正Windowsアプリは実行時に使いません。
 
-The current demodulator supports Mode 3, guard interval 1/8, QPSK, code rate 2/3 and time interleave I=4. Other transmission modes are not yet supported. It continuously acquires USB I/Q, decodes overlapping 2.06-second windows on another thread, and aligns shared TS packets to avoid duplication. The shared core corrects up to eight byte errors per RS packet; uncorrectable packets are discarded. A bounded soft-decision Viterbi fallback handles captures where hard-decision decoding fails. The helper uses the shared `PartialReceptionPat` adapter to add a PAT when the partial-reception stream carries PMT and SDT but no PAT, so TVTest can find the one-seg service. Service/channel scan may require more time than a hardware tuner.
+USBから取得したI/Qを別プロセスの`rtl_oneseg_helper.exe`で復調し、[共通コア](https://github.com/mouseos/rtl-sdr-oneseg-core)から188バイトのMPEG-TSを出力します。USB処理を分離して、異常がTVTest本体に波及するのを抑えています。
 
-The x64 MSVC BonDriver ABI was confirmed in TVTest 0.10.0. An earlier build had corruption, dropouts and a scan crash; USB and demodulation now run in an isolated helper. A later TVTest scan still missed physical channels 13, 15 and 21. The FC0013 comparison below recovered all seven tested physical channels. On the tested hardware, continuous helper captures of channels 13, 14 and 15 lasted 12 seconds each and channels 19, 21, 23 and 25 lasted 10 seconds each; all seven had zero TS continuity errors and zero repeated TS packets. This is a bounded capture result, not a long-term or TVTest playback guarantee.
+## 対応環境
 
-`GetSignalLevel()` reports a non-calibrated dB-like quality estimate derived from cyclic-prefix correlation after TS lock. It is not a measured RF C/N or signal power. In TVTest channel-scan settings, enable **Ignore signal level** so a channel is judged by its TS service information: the quality estimate is initially zero until the first decode and can be below a fixed scan threshold even when valid TS is available.
+- Windows x64版TVTest（TVTest 0.10.0で確認）。32ビット版には対応しません。
+- RTL2832U + FC0013のUSBチューナー。動作確認機はLT-DT306です。
+- チューナーに対応するlibusb系ドライバーと受信用アンテナ。
+- `VCRUNTIME140.dll`が見つからない場合は、Microsoft Visual C++再頒布可能パッケージのx64版が必要です。
+- 放送条件はISDB-T Mode 3、ガードインターバル1/8、QPSK、符号化率2/3、時間インターリーブI=4の中央1セグに対応します。その他の条件では受信できません。
 
-## Build
+## ReleaseのZIPから使う
 
-Clone this repository next to `rtl-sdr-oneseg-core`, or pass its path explicitly. **Build with MSVC x64.** TVTest performs an MSVC `dynamic_cast` on the BonDriver object, so a MinGW C++ DLL can crash TVTest even when a simple exported-function probe succeeds.
+1. [Releases](https://github.com/mouseos/BonDriver-RTLSDR/releases)からWindows x64用ZIPを取得し、展開します。
+2. 次の4ファイルを**同じフォルダー**に置きます。TVTestの構成に合わせ、`TVTest.exe`があるフォルダー、またはBonDriverを置くフォルダーを使ってください。`BonDriver_RTLSDR.dll`と`rtl_oneseg_helper.exe`は必ず同じフォルダーに置きます。
+
+   ```text
+   BonDriver_RTLSDR.dll
+   rtl_oneseg_helper.exe
+   rtlsdr.dll
+   libusb-1.0.dll
+   ```
+
+3. ZIP内の`BonDriver_RTLSDR.ini.example`を同じフォルダーにコピーし、名前を`BonDriver_RTLSDR.ini`に変更します。`[Source]`の`Mode=Live`、`RtlSdrLibrary=rtlsdr.dll`を確認します。依存DLLを別の場所に置く場合は、`RtlSdrLibrary`を**Windows形式の絶対パス**にしてください。
+4. チューナーとアンテナを接続し、TVTestで`BonDriver_RTLSDR.dll`を選択します。例: `TVTest.exe /d BonDriver_RTLSDR.dll`。
+5. TVTestのチャンネルスキャンでは、**「信号レベルを無視する」**を有効にします。選局後、復調開始まで数秒かかるため、スキャンの待ち時間を短くしすぎないでください。スキャン後はワンセグのサービスを選びます。SDTにフルセグのサービス名が現れても、このドライバーが出すのは中央1セグのTSです。
+
+`GetSignalLevel()`は復調後の同期相関から計算した便宜的な品質指標です。表示単位がdBでも、校正済みのRF C/Nや受信電力ではありません。選局直後は0になります。
+
+### 旧名から更新する場合
+
+旧`BonDriver_RTLSDR_OneSeg.dll`を使っていた場合は、TVTestを終了してから、既存の`BonDriver_RTLSDR_OneSeg.ini`と`BonDriver_RTLSDR_OneSeg.ch2`をそれぞれ`BonDriver_RTLSDR.ini`と`BonDriver_RTLSDR.ch2`へ改名すると設定を引き継げます。新しいDLL・ヘルパー・`rtlsdr.dll`・`libusb-1.0.dll`を一式で入れ替えてください。TVTestを複数起動すると片方がUSBチューナーを占有し、もう片方では全チャンネルが0と表示されることがあります。
+
+## 設定と制約
+
+- `Mode=Live`が通常の実機受信です。`Mode=Replay`は録画済み中間データの開発用再生で、`ViterbiFile`と`PhysicalChannel`の指定が必要です。通常の視聴では変更しません。
+- 初期のチューナー利得は`GainTenthsDb=58`（5.8 dB）。物理ch13・15には7.1 dBとFC0013のIF利得レジスター`0x0f`を使い、その他はINIの利得と`0x0a`を使います。動作確認機の設定であり、受信条件によって調整が必要です。
+- チューナーは放送中心より600 kHz低く同調し、RTL2832U内のIF補正を適用します。この処理に必要な機能を持たない通常版`rtlsdr.dll`では起動しません。Release ZIP内の修正版を使ってください。
+- USB受信と復調は約2.06秒の重複窓で処理します。共有コアはRS誤り訂正と、硬判定で復号できないときの限定的な軟判定を行い、部分受信TSにPATが無いときは補完します。選局直後の待ち時間とCPU負荷はハードウェアに依存します。
+- ユーザーのTVTest実視聴で全局の良好受信が報告されています。長時間の無ドロップ性能はまだ定量測定していません。
+
+## ソースからビルドする
+
+Visual StudioのMSVC x64、CMake、Ninjaを使用します。TVTestはMSVCのC++ RTTIでBonDriverを判定するため、BonDriver DLLをMinGWでビルドするとクラッシュすることがあります。共通コアのチェックアウトを`ONESEG_CORE_DIR`に指定します。
 
 ```powershell
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DONESEG_CORE_DIR=D:\path\to\rtl-sdr-oneseg-core
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DONESEG_CORE_DIR=C:\src\rtl-sdr-oneseg-core
 cmake --build build
 ```
 
-Build a 64-bit `rtl-sdr` DLL from osmocom revision `797f8143266d983c56d8f35d2d442527529dd8a5` with [the FC0013 ISDB-T patch](patches/rtl-sdr-fc0013-isdb.patch). From that checkout, apply the patch with `git apply <path-to-this-repository>\patches\rtl-sdr-fc0013-isdb.patch`, then build `rtlsdr.dll` with MSVC x64 and libusb. Place `libusb-1.0.dll` beside `rtlsdr.dll`. The patch changes the RTL2832U initialization, adds the vendor IF correction at page 1 registers 0x16-0x18, and exposes FC0013 register 0x13 tuning. The patched RTL-SDR source retains its upstream GPL license. The BonDriver requires these added exports and fails to open if an ordinary RTL-SDR DLL is selected.
+加えて、[osmocom rtl-sdr](https://github.com/osmocom/rtl-sdr)のコミット`797f8143266d983c56d8f35d2d442527529dd8a5`に[FC0013/ISDB-T用パッチ](patches/rtl-sdr-fc0013-isdb.patch)を適用し、MSVC x64とlibusbで`rtlsdr.dll`をビルドします。`libusb-1.0.dll`も必要です。パッチはRTL2832U初期化、デジタルIF補正、FC0013 IF利得設定のエクスポートを追加します。
 
-Use a 64-bit compiler for 64-bit TVTest. Copy **both** `BonDriver_RTLSDR.dll` and `rtl_oneseg_helper.exe` next to `TVTest.exe`. Copy `BonDriver_RTLSDR.ini.example` to `BonDriver_RTLSDR.ini` and set `RtlSdrLibrary` to the full Windows path of the patched `rtlsdr.dll`. The LT-DT306 must use a compatible libusb driver and be connected to an antenna. The default `Mode=Live` uses the isolated helper; each channel change stops the old helper and starts a new one. When upgrading from `BonDriver_RTLSDR_OneSeg.dll`, rename the existing `.ini` and `.ch2` files to the new DLL basename so TVTest retains the saved services.
+## ライセンス・参照
 
-The default FC0013 tuner gain is 5.8 dB (`GainTenthsDb=58`). Physical channels 13 and 15 use 7.1 dB and FC0013 IF gain register `0x13=0x0f`; the other channels use the INI tuner gain and `0x13=0x0a`. The tuner is set 600 kHz below channel center, and the RTL2832U digital IF correction restores the center before I/Q decimation. These values were measured on one LT-DT306; reception may vary with RF conditions.
+修正版rtl-sdrは上流のGPL-2.0に従います。配布ZIPにはrtl-sdrとlibusbのライセンス文書を同梱します。共通コアとこのBonDriverのソースは上記リポジトリとReleaseのソース一式を参照してください。
 
-Start TVTest with `/d BonDriver_RTLSDR.dll`. The DLL reports one tuning space with UHF physical channels 13 through 52. For debugging a recorded capture, explicitly set `Mode=Replay`, `ViterbiFile`, and `PhysicalChannel` in the INI; live mode is the default and never falls back silently to replay.
-
-BonDriver ABI was checked against the [TvtPlay BonDriver_Pipe source headers](https://github.com/xtne6f/TvtPlay/tree/work/BonDriver_Pipe_src). TVTest invocation follows [TVTest's documentation](https://github.com/DBCTRADO/TVTest/blob/develop/doc/TVTest.txt).
+- [BonDriver ABIの参照実装](https://github.com/xtne6f/TvtPlay/tree/work/BonDriver_Pipe_src)
+- [TVTestのドキュメント](https://github.com/DBCTRADO/TVTest/blob/develop/doc/TVTest.txt)

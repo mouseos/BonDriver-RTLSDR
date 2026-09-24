@@ -1,8 +1,9 @@
 [Source]
 Mode=Live
-; Full Windows path to the patched 64-bit rtlsdr.dll (see README).
-RtlSdrLibrary=C:\path\to\rtlsdr.dll
+; Release ZIP内の修正版rtlsdr.dllを同じフォルダーに置いて使用します。
+; 別の場所に置く場合はWindows形式の絶対パスを指定してください。
+RtlSdrLibrary=rtlsdr.dll
 GainTenthsDb=58
-; For recorded-signal debugging only, set Mode=Replay and these fields:
+; 録画済み中間データの開発用再生時だけ使用します。
 ; ViterbiFile=C:\path\to\viterbi_bytes.bin
 ; PhysicalChannel=25
