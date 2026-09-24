@@ -17,7 +17,9 @@ namespace {
 
 constexpr std::uint32_t kFrameMagic = 0x3147534f;
 constexpr std::size_t kWindowBytes = 2 * 4'194'304;
-constexpr std::size_t kAdvanceBytes = kWindowBytes / 2;
+// Keep roughly 0.52 s of overlap for the time/byte deinterleavers while
+// allowing the 2.06 s decode window about 1.55 s of CPU time to finish.
+constexpr std::size_t kAdvanceBytes = kWindowBytes * 3 / 4;
 constexpr std::size_t kFirstBytes = 3 * 1024 * 1024;
 
 bool write_all(HANDLE handle, const void* data, std::size_t size) {
